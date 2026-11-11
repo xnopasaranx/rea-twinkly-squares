@@ -1,0 +1,14 @@
+services:
+  twinkly:
+    build: .
+    container_name: twinkly-squares-controller
+    # Use host networking so UDP/RT traffic and device discovery can
+    # reach the Twinkly controller on the LAN without extra port publishing.
+    network_mode: host
+    environment:
+      - PORT=8080
+      - TWINKLY_DEFAULT_IP=192.168.2.50
+      - DATA_DIR=/data
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
