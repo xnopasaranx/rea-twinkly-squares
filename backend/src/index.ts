@@ -326,6 +326,15 @@ app.get('/api/device/movies', async (req, res) => {
   }
 });
 
+app.get('/api/device/playlist', async (req, res) => {
+  try {
+    const playlist = await twinklyClient.getPlaylist();
+    res.json(playlist);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.delete('/api/device/movies', async (req, res) => {
   try {
     await twinklyClient.setMode('off');

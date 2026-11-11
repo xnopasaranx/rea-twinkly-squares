@@ -101,19 +101,16 @@ export class TwinklyClient {
   private async post<T = DeviceResponse>(path: string, body?: any, extraHeaders?: Record<string, string>, raw?: boolean): Promise<T | DeviceResponse> {
     const tokenHeaders = await this.authHeaders();
     const headers = { ...tokenHeaders, ...extraHeaders };
+    const url = path.startsWith('http') ? path : `${this.baseUrl}${path}`;
     try {
-      const res = raw
-        ? await axios.post<T>(`${this.baseUrl}${path}`, body, { headers })
-        : await this.axios.post<T>(path, body, { headers });
+      const res = await axios.post<T>(url, body, { headers });
       return res.data;
     } catch (err: any) {
       if (err.response?.status === 401) {
         await this.login();
         const tokenHeaders2 = await this.authHeaders();
         const headers2 = { ...tokenHeaders2, ...extraHeaders };
-        const res = raw
-          ? await axios.post<T>(`${this.baseUrl}${path}`, body, { headers: headers2 })
-          : await this.axios.post<T>(path, body, { headers: headers2 });
+        const res = await axios.post<T>(url, body, { headers: headers2 });
         return res.data;
       }
       throw err;
@@ -189,12 +186,12 @@ export class TwinklyClient {
   }
 
   async uploadMovie(binary: Buffer): Promise<{ code: number; frames_number: number }> {
-    return this.post(
-      '/led/movie/full',
-      binary,
-      { 'Content-Type': 'application/octet-stream' },
-      true
-    ) as any;
+    const headers = await this.authHeaders();
+    const url = `${this.baseUrl}/led/movie/full`;
+    const res = await this.axios.post<{ code: number; frames_number: number }>(url, binary, {
+      headers: { ...headers, 'Content-Type': 'application/octet-stream' },
+    });
+    return res.data;
   }
 
   async getMovies(): Promise<{
@@ -220,23 +217,30 @@ export class TwinklyClient {
     framesNumber: number,
     fps: number
   ): Promise<DeviceResponse> {
-    return this.post('/movies/new', {
+    const body = {
       name,
       unique_id: uid,
       descriptor_type: descriptorType,
       leds_per_frame: ledsPerFrame,
       frames_number: framesNumber,
       fps,
+    };
+    const headers = await this.authHeaders();
+    const res = await axios.post<DeviceResponse>(`${this.baseUrl}/movies/new`, body, {
+      headers: { ...headers, 'Content-Type': 'application/json' },
     });
+    return res.data;
   }
 
   async uploadMovieList(binary: Buffer): Promise<DeviceResponse> {
-    return this.post(
-      '/movies/full',
-      binary,
-      { 'Content-Type': 'application/octet-stream' },
-      true
-    ) as any;
+    const headers = await this.authHeaders();
+    const url = `${this.baseUrl}/movies/full`;
+    const res = await axios.post<DeviceResponse>(url, binary, {
+      headers: { ...headers, 'Content-Type': 'application/octet-stream' },
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+    });
+    return res.data;
   }
 
   async setMoviesCurrent(id: number): Promise<DeviceResponse> {
@@ -248,7 +252,11 @@ export class TwinklyClient {
   }
 
   async setPlaylist(entries: { unique_id: string; duration: number }[]): Promise<DeviceResponse> {
-    return this.post('/playlist', { entries });
+    const headers = await this.authHeaders();
+    const res = await axios.post<DeviceResponse>(`${this.baseUrl}/playlist`, { entries }, {
+      headers: { ...headers, 'Content-Type': 'application/json' },
+    });
+    return res.data;
   }
 
   async deletePlaylist(): Promise<DeviceResponse> {
