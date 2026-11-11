@@ -1,30 +1,63 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { DeviceConfig, PanelOrientation } from '../types';
+import { v4 as uuidv4 } from 'uuid';
+import { DeviceConfig, PanelOrientation, MatrixConfig, MqttSettings, OverlayArea, AppSettings } from '../types';
 import { defaultPanelOrientations } from './layoutBuilder';
 
-export interface AppSettings {
-  device: DeviceConfig;
-  lastUsed?: string;
+export function defaultMqttSettings(): MqttSettings {
+  return {
+    enabled: false,
+    brokerHost: '',
+    brokerPort: 1883,
+    username: '',
+    password: '',
+    baseTopic: 'twinkly-squares',
+  };
 }
 
 export function defaultPanelChain(gridCols: number, gridRows: number): number[] {
   return Array.from({ length: gridCols * gridRows }, (_, i) => i);
 }
 
-export function defaultSettings(defaultIp: string): AppSettings {
+export function ensureDevice(config: DeviceConfig): DeviceConfig {
+  const expectedCount = config.gridCols * config.gridRows;
+  if (!Array.isArray(config.panelOrientations) || config.panelOrientations.length !== expectedCount) {
+    config.panelOrientations = defaultPanelOrientations(expectedCount);
+  }
+  if (!Array.isArray(config.panelChain) || config.panelChain.length !== expectedCount) {
+    config.panelChain = defaultPanelChain(config.gridCols, config.gridRows);
+  }
+  return config;
+}
+
+export function defaultMatrix(id: string, defaultIp: string, name = 'Default'): MatrixConfig {
   return {
+    id,
+    name,
     device: {
       ip: defaultIp,
       panelCols: 8,
       panelRows: 8,
-      // Default assumes a 4x4 grid of 8x8 panels (1024 LEDs), matching
-      // the Twinkly Squares device that reports 1024 LEDs in this setup.
       gridCols: 4,
       gridRows: 4,
-      panelOrientations: [],
+      panelOrientations: defaultPanelOrientations(16),
       panelChain: defaultPanelChain(4, 4),
     },
+    topicSuffix: id,
+    overlays: [defaultOverlayArea('main', 0, 0, 32, 8)],
+  };
+}
+
+export function defaultOverlayArea(id: string, x: number, y: number, width: number, height: number): OverlayArea {
+  return { id, x, y, width, height, maxQueueSize: 10, defaultColor: '#ffffff', defaultBg: '', defaultSpeed: 8 };
+}
+
+export function defaultSettings(defaultIp: string): AppSettings {
+  const matrix = defaultMatrix(uuidv4(), defaultIp);
+  return {
+    matrices: [matrix],
+    mqtt: defaultMqttSettings(),
+    activeMatrixId: matrix.id,
   };
 }
 
@@ -32,17 +65,39 @@ export function loadSettings(dataDir: string, envIp: string): AppSettings {
   const file = path.join(dataDir, 'settings.json');
   if (fs.existsSync(file)) {
     try {
-      const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as AppSettings;
-      if (!parsed.device) parsed.device = defaultSettings(envIp).device;
-      if (!parsed.device.ip) parsed.device.ip = envIp;
-      const expectedCount = parsed.device.gridCols * parsed.device.gridRows;
-      if (!Array.isArray(parsed.device.panelOrientations) || parsed.device.panelOrientations.length !== expectedCount) {
-        parsed.device.panelOrientations = defaultPanelOrientations(expectedCount);
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as any;
+
+      // Migration from legacy single-device config to matrices.
+      if (!Array.isArray(parsed.matrices) || parsed.matrices.length === 0) {
+        const legacyDevice: DeviceConfig = parsed.device || defaultSettings(envIp).matrices[0].device;
+        legacyDevice.ip = legacyDevice.ip || envIp;
+        ensureDevice(legacyDevice);
+        const matrix: MatrixConfig = {
+          id: uuidv4(),
+          name: 'Default',
+          device: legacyDevice,
+          topicSuffix: 'default',
+          overlays: [defaultOverlayArea('main', 0, 0, legacyDevice.gridCols * legacyDevice.panelCols, legacyDevice.gridRows * legacyDevice.panelRows)],
+        };
+        parsed.matrices = [matrix];
+        parsed.activeMatrixId = matrix.id;
+        delete parsed.device;
       }
-      if (!Array.isArray(parsed.device.panelChain) || parsed.device.panelChain.length !== expectedCount) {
-        parsed.device.panelChain = defaultPanelChain(parsed.device.gridCols, parsed.device.gridRows);
+
+      for (const m of parsed.matrices) {
+        ensureDevice(m.device);
+        if (!Array.isArray(m.overlays) || m.overlays.length === 0) {
+          m.overlays = [defaultOverlayArea('main', 0, 0, m.device.gridCols * m.device.panelCols, m.device.gridRows * m.device.panelRows)];
+        }
       }
-      return parsed;
+
+      if (!parsed.mqtt) parsed.mqtt = defaultMqttSettings();
+
+      // Ensure an active matrix exists.
+      const activeExists = parsed.matrices.some((m: MatrixConfig) => m.id === parsed.activeMatrixId);
+      if (!activeExists) parsed.activeMatrixId = parsed.matrices[0].id;
+
+      return parsed as AppSettings;
     } catch (e) {
       console.warn('[settings] failed to load, using defaults', e);
     }

@@ -19,6 +19,7 @@ onMounted(() => store.init());
         <router-link to="/playlists">Playlists</router-link>
         <router-link to="/draw">Draw</router-link>
         <router-link to="/layout">Layout</router-link>
+        <router-link to="/mqtt">MQTT & Overlays</router-link>
       </nav>
       <div class="status" v-if="store.status">
         <span class="dot" :class="store.status.mode?.data?.mode || 'unknown'"></span>

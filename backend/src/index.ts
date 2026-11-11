@@ -8,8 +8,9 @@ import fs from 'fs';
 import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
 import { TwinklyClient } from './services/twinklyClient';
-import { loadSettings, saveSettings, totalLeds, gridDimensions, AppSettings } from './services/settings';
-import { DeviceConfig } from './types';
+import { loadSettings, saveSettings, totalLeds, gridDimensions } from './services/settings';
+import { AppSettings } from './types';
+import { DeviceConfig, MatrixConfig, MqttSettings, OverlayArea, OverlayMessage } from './types';
 import { LibraryService } from './services/libraryService';
 import { PlaylistService } from './services/playlistService';
 import { DrawingService } from './services/drawingService';
@@ -19,6 +20,8 @@ import {
   rasterToDeviceFrame,
 } from './services/imageProcessor';
 import { estimateGridDimensions } from './services/gridDetector';
+import { MqttService } from './services/mqttService';
+import { mqttRoutes } from './routes/mqtt';
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
@@ -28,22 +31,38 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 
 let settings = loadSettings(DATA_DIR, DEFAULT_DEVICE_IP);
 
-const libraryService = new LibraryService(DATA_DIR, settings.device);
+const libraryService = new LibraryService(DATA_DIR, settings.matrices[0].device);
 const playlistService = new PlaylistService(DATA_DIR);
 const drawingService = new DrawingService(DATA_DIR);
+const mqttService = new MqttService(settings, libraryService, drawingService);
 
-let twinklyClient = new TwinklyClient(settings.device.ip, settings.device.mac || undefined);
+let twinklyClient = new TwinklyClient(settings.matrices[0].device.ip, settings.matrices[0].device.mac || undefined);
 
 function refreshClient() {
   twinklyClient.closeRealtimeSocket();
-  twinklyClient = new TwinklyClient(settings.device.ip, settings.device.mac || undefined);
+  const active = settings.matrices.find((m) => m.id === settings.activeMatrixId) || settings.matrices[0];
+  twinklyClient = new TwinklyClient(active.device.ip, active.device.mac || undefined);
 }
 
 function updateSettings(partial: Partial<AppSettings>) {
   settings = { ...settings, ...partial };
   saveSettings(DATA_DIR, settings);
-  libraryService.setConfig(settings.device);
+  const active = settings.matrices.find((m) => m.id === settings.activeMatrixId) || settings.matrices[0];
+  libraryService.setConfig(active.device);
+  mqttService.onSettingsUpdated(settings);
   refreshClient();
+}
+
+function activeMatrix(): MatrixConfig {
+  return settings.matrices.find((m) => m.id === settings.activeMatrixId) || settings.matrices[0];
+}
+
+function activeDevice(): DeviceConfig {
+  return activeMatrix().device;
+}
+
+function getMatrix(id?: string): MatrixConfig {
+  return settings.matrices.find((m) => m.id === id) || activeMatrix();
 }
 
 const app = express();
@@ -55,8 +74,8 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 
 // ----------------------- helpers -----------------------
 
 /**
- * Build the raster -> native LED order mapping for the currently configured
- * panel layout (panel sizes, panel grid, orientations and cable-chain order).
+ * Build the raster -> native LED order mapping for the given matrix
+ * (panel sizes, panel grid, orientations and cable-chain order).
  *
  * We do not read the coordinates back from the hardware because Twinkly
  * Squares firmware stores a low-resolution / panel-level synthesis of the
@@ -64,9 +83,9 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 
  * that movies, real-time previews and drawings are transformed with exactly
  * the same layout that the test pattern uses.
  */
-function getCurrentDeviceMapping(): number[] {
-  const { gridCols, gridRows, panelCols, panelRows, panelOrientations, panelChain } = settings.device;
-  const { width, height } = gridDimensions(settings.device);
+function getDeviceMapping(device: DeviceConfig): number[] {
+  const { gridCols, gridRows, panelCols, panelRows, panelOrientations, panelChain } = device;
+  const { width, height } = gridDimensions(device);
   const coords = rectLayoutPayload(
     gridCols,
     gridRows,
@@ -78,6 +97,11 @@ function getCurrentDeviceMapping(): number[] {
   return buildLedToPixelMapping(coords, width, height);
 }
 
+/** @deprecated kept for old call sites */
+function getCurrentDeviceMapping(): number[] {
+  return getDeviceMapping(activeDevice());
+}
+
 // ----------------------- device routes -----------------------
 
 app.get('/api/status', async (req, res) => {
@@ -87,13 +111,17 @@ app.get('/api/status', async (req, res) => {
       twinklyClient.getMode().then((m) => ({ ok: true, data: m })).catch((e) => ({ ok: false, error: e.message })),
       twinklyClient.status().then((s) => ({ ok: true, data: s })).catch((e) => ({ ok: false, error: e.message })),
     ]);
-    const dims = gridDimensions(settings.device);
+    const device = activeDevice();
+    const dims = gridDimensions(device);
     res.json({
       gestalt,
       mode,
       status,
-      settings: settings.device,
-      configured: { leds: totalLeds(settings.device), width: dims.width, height: dims.height },
+      settings: device,
+      matrices: settings.matrices,
+      mqtt: settings.mqtt,
+      activeMatrixId: settings.activeMatrixId,
+      configured: { leds: totalLeds(device), width: dims.width, height: dims.height },
     });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -105,18 +133,37 @@ app.get('/api/settings', (req, res) => {
 });
 
 app.put('/api/settings', (req, res) => {
-  const { ip, mac, panelCols, panelRows, gridCols, gridRows, panelOrientations, panelChain } = req.body;
-  const device: DeviceConfig = {
-    ip: ip || settings.device.ip,
-    mac: mac || settings.device.mac,
-    panelCols: panelCols ?? settings.device.panelCols,
-    panelRows: panelRows ?? settings.device.panelRows,
-    gridCols: gridCols ?? settings.device.gridCols,
-    gridRows: gridRows ?? settings.device.gridRows,
-    panelOrientations: panelOrientations ?? settings.device.panelOrientations,
-    panelChain: panelChain ?? settings.device.panelChain,
-  };
-  updateSettings({ device });
+  const { mqtt, matrices, activeMatrixId, device } = req.body;
+  const updates: Partial<AppSettings> = {};
+
+  if (mqtt) updates.mqtt = { ...settings.mqtt, ...mqtt };
+  if (Array.isArray(matrices)) updates.matrices = matrices;
+  if (activeMatrixId) updates.activeMatrixId = activeMatrixId;
+
+  // Legacy single-device payload still supported.
+  if (device && !matrices) {
+    const active = activeMatrix();
+    updates.matrices = settings.matrices.map((m) =>
+      m.id === active.id
+        ? {
+            ...m,
+            device: {
+              ...m.device,
+              ip: device.ip ?? m.device.ip,
+              mac: device.mac ?? m.device.mac,
+              panelCols: device.panelCols ?? m.device.panelCols,
+              panelRows: device.panelRows ?? m.device.panelRows,
+              gridCols: device.gridCols ?? m.device.gridCols,
+              gridRows: device.gridRows ?? m.device.gridRows,
+              panelOrientations: device.panelOrientations ?? m.device.panelOrientations,
+              panelChain: device.panelChain ?? m.device.panelChain,
+            },
+          }
+        : m
+    );
+  }
+
+  updateSettings(updates);
   res.json(settings);
 });
 
@@ -170,13 +217,14 @@ app.get('/api/device/layout', async (req, res) => {
 
 app.post('/api/device/layout', async (req, res) => {
   try {
+    const device = activeDevice();
     const layout = rectLayoutPayload(
-      settings.device.gridCols,
-      settings.device.gridRows,
-      settings.device.panelCols,
-      settings.device.panelRows,
-      settings.device.panelOrientations,
-      settings.device.panelChain
+      device.gridCols,
+      device.gridRows,
+      device.panelCols,
+      device.panelRows,
+      device.panelOrientations,
+      device.panelChain
     );
     const r = await twinklyClient.setLayout(layout);
     res.json({ ...r, layout });
@@ -252,16 +300,17 @@ function drawPanelNumber(
  */
 app.post('/api/device/test-pattern', async (req, res) => {
   try {
-    const orientations = req.body?.panelOrientations || settings.device.panelOrientations || [];
-    const chain = req.body?.panelChain || settings.device.panelChain || [];
-    const { width, height } = gridDimensions(settings.device);
+    const device = activeDevice();
+    const orientations = req.body?.panelOrientations || device.panelOrientations || [];
+    const chain = req.body?.panelChain || device.panelChain || [];
+    const { width, height } = gridDimensions(device);
 
     const coords = normalizeCoords(
       buildRectLayout(
-        settings.device.gridCols,
-        settings.device.gridRows,
-        settings.device.panelCols,
-        settings.device.panelRows,
+        device.gridCols,
+        device.gridRows,
+        device.panelCols,
+        device.panelRows,
         orientations,
         chain
       )
@@ -269,12 +318,12 @@ app.post('/api/device/test-pattern', async (req, res) => {
     const mapping = buildLedToPixelMapping(coords, width, height);
 
     const raster = Buffer.alloc(width * height * 3);
-    const pc = settings.device.panelCols;
-    const pr = settings.device.panelRows;
+    const pc = device.panelCols;
+    const pr = device.panelRows;
 
-    for (let py = 0; py < settings.device.gridRows; py++) {
-      for (let px = 0; px < settings.device.gridCols; px++) {
-        const pos = py * settings.device.gridCols + px;
+    for (let py = 0; py < device.gridRows; py++) {
+      for (let px = 0; px < device.gridCols; px++) {
+        const pos = py * device.gridCols + px;
         const cableIdx = chain[pos] ?? pos;
         const label = String(cableIdx + 1);
 
@@ -420,7 +469,8 @@ app.post('/api/rt/play/:id', async (req, res) => {
     const bin = libraryService.getProcessedFrames(req.params.id);
     if (!bin) return res.status(404).json({ error: 'Processed frames missing' });
 
-    const n = totalLeds(settings.device);
+    const device = activeDevice();
+    const n = totalLeds(device);
     const frameSize = n * 3;
     const frames: Buffer[] = [];
     for (let offset = 0; offset < bin.length; offset += frameSize) {
@@ -428,7 +478,7 @@ app.post('/api/rt/play/:id', async (req, res) => {
     }
     if (!frames.length) return res.status(400).json({ error: 'No frames' });
 
-    const mapping = getCurrentDeviceMapping();
+    const mapping = getDeviceMapping(device);
     const deviceFrames = frames.map((f) => rasterToDeviceFrame(f, mapping));
 
     await twinklyClient.setMode('rt');
@@ -472,9 +522,10 @@ app.post('/api/movie/upload/:id', async (req, res) => {
     const bin = libraryService.getProcessedFrames(req.params.id);
     if (!bin) return res.status(404).json({ error: 'Processed frames missing' });
 
-    const mapping = getCurrentDeviceMapping();
+    const device = activeDevice();
+    const mapping = getDeviceMapping(device);
 
-    const n = totalLeds(settings.device);
+    const n = totalLeds(device);
     const frameSize = n * 3;
     const rasterFrames: Buffer[] = [];
     for (let offset = 0; offset < bin.length; offset += frameSize) {
@@ -502,9 +553,10 @@ app.post('/api/movie/upload-raw', upload.single('file'), async (req, res) => {
     const item = await libraryService.addFromBuffer(req.file.buffer, name || req.file.originalname, type);
     const bin = libraryService.getProcessedFrames(item.id)!;
 
-    const mapping = getCurrentDeviceMapping();
+    const device = activeDevice();
+    const mapping = getDeviceMapping(device);
 
-    const n = totalLeds(settings.device);
+    const n = totalLeds(device);
     const frameSize = n * 3;
     const rasterFrames: Buffer[] = [];
     for (let offset = 0; offset < bin.length; offset += frameSize) {
@@ -560,9 +612,10 @@ app.post('/api/playlists/:id/apply', async (req, res) => {
       const bin = libraryService.getProcessedFrames(entry.itemId);
       if (!bin) continue;
 
-      const mapping = getCurrentDeviceMapping();
+      const device = activeDevice();
+      const mapping = getDeviceMapping(device);
 
-      const n = totalLeds(settings.device);
+      const n = totalLeds(device);
       const frameSize = n * 3;
       const rasterFrames: Buffer[] = [];
       for (let offset = 0; offset < bin.length; offset += frameSize) {
@@ -679,7 +732,8 @@ app.post('/api/drawings/:id/send', async (req, res) => {
     const d = drawingService.get(req.params.id);
     if (!d) return res.status(404).json({ error: 'Not found' });
 
-    const mapping = getCurrentDeviceMapping();
+    const device = activeDevice();
+    const mapping = getDeviceMapping(device);
 
     const frameIdx = req.body.frame ?? 0;
     const frame = d.frames[frameIdx] || d.frames[0];
@@ -699,6 +753,24 @@ app.post('/api/drawings/:id/send', async (req, res) => {
   }
 });
 
+// ----------------------- MQTT / overlay routes -----------------------
+
+const apiRouter = express.Router();
+mqttRoutes(
+  apiRouter,
+  () => settings,
+  (id) => mqttService.composerStatus(id),
+  (id) => mqttService.startComposer(id),
+  (id) => mqttService.stopComposer(id)
+);
+app.use('/api', apiRouter);
+
+// Dedicated MQTT config endpoint for the UI.
+app.put('/api/mqtt', (req, res) => {
+  updateSettings({ mqtt: { ...settings.mqtt, ...req.body } });
+  res.json(settings.mqtt);
+});
+
 // ----------------------- static & frontend -----------------------
 
 app.use('/library', express.static(path.join(DATA_DIR, 'library')));
@@ -714,6 +786,8 @@ if (fs.existsSync(frontendDist)) {
 app.listen(PORT, () => {
   console.log(`Twinkly backend listening on port ${PORT}`);
   console.log(`Data dir: ${DATA_DIR}`);
-  const dims = gridDimensions(settings.device);
-  console.log(`Device: ${settings.device.ip} ${dims.width}x${dims.height} (${totalLeds(settings.device)} LEDs)`);
+  const active = activeMatrix();
+  const dims = gridDimensions(active.device);
+  console.log(`Active matrix: ${active.name} (${active.device.ip}) ${dims.width}x${dims.height} (${totalLeds(active.device)} LEDs)`);
+  mqttService.connect();
 });

@@ -15,6 +15,48 @@ export interface DeviceConfig {
   panelChain?: number[];  // logical position -> cable index (which physical panel is here)
 }
 
+declare module 'oled-font-5x7';
+
+export interface MqttSettings {
+  enabled: boolean;
+  brokerHost: string;
+  brokerPort: number;
+  username: string;
+  password: string;
+  baseTopic: string;
+}
+
+export interface OverlayArea {
+  id: string;
+  x: number;              // top-left pixel on the matrix
+  y: number;
+  width: number;          // pixel width
+  height: number;         // pixel height
+  maxQueueSize: number;   // oldest message is dropped when exceeded
+  defaultColor?: string;  // hex, e.g. #ffffff
+  defaultBg?: string;     // hex background color, empty = transparent
+  defaultSpeed?: number;  // pixels per second
+}
+
+export interface OverlayMessage {
+  id?: string;
+  text: string;
+  color?: string;
+  bg?: string;
+  speed?: number;         // pixels per second
+  loop?: boolean;         // loop indefinitely in the queue
+  count?: number;         // play this many times if not looping (default 1)
+  addedAt?: string;
+}
+
+export interface MatrixConfig {
+  id: string;
+  name: string;
+  device: DeviceConfig;
+  topicSuffix?: string;   // appended under baseTopic (defaults to id)
+  overlays: OverlayArea[];
+}
+
 export interface TwinklyGestalt {
   product_name: string;
   product_version?: string;
@@ -82,6 +124,13 @@ export interface LibraryItem {
   processedPath?: string;
   createdAt: string;
   tags?: string[];
+}
+
+export interface AppSettings {
+  matrices: MatrixConfig[];
+  mqtt: MqttSettings;
+  activeMatrixId?: string;
+  lastUsed?: string;
 }
 
 export interface Playlist {

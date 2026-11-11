@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import { api, DeviceSettings, LibraryItem, Playlist, Drawing, SearchResult } from '../api';
+import { api, DeviceSettings, MatrixConfig, MqttSettings, LibraryItem, Playlist, Drawing, SearchResult } from '../api';
 
 export const useAppStore = defineStore('app', () => {
   const settings = ref<DeviceSettings | null>(null);
@@ -9,12 +9,18 @@ export const useAppStore = defineStore('app', () => {
   const playlists = ref<Playlist[]>([]);
   const drawings = ref<Drawing[]>([]);
   const searchResults = ref<SearchResult[]>([]);
+  const composerStatus = ref<Record<string, any>>({});
   const loading = ref(false);
   const error = ref<string | null>(null);
   const activeRtId = ref<string | null>(null);
 
+  const activeMatrix = computed((): MatrixConfig | undefined => {
+    if (!settings.value) return undefined;
+    return settings.value.matrices.find((m) => m.id === settings.value?.activeMatrixId) || settings.value.matrices[0];
+  });
+
   const gridSize = computed(() => {
-    const d = settings.value?.device;
+    const d = activeMatrix.value?.device;
     if (!d) return { width: 32, height: 32 };
     return {
       width: d.gridCols * d.panelCols,
@@ -41,12 +47,92 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  async function updateDevice(device: Partial<DeviceSettings['device']>) {
+  async function updateDevice(device: Partial<MatrixConfig['device']>) {
     try {
-      await api.updateSettings(device);
+      const active = activeMatrix.value;
+      if (!active) return;
+      const matrices = settings.value!.matrices.map((m) =>
+        m.id === active.id ? { ...m, device: { ...m.device, ...device } } : m
+      );
+      await api.updateSettings({ matrices });
       await fetchSettings();
     } catch (e: any) {
       error.value = e.message;
+    }
+  }
+
+  async function updateMatrices(matrices: MatrixConfig[]) {
+    try {
+      await api.updateSettings({ matrices });
+      await fetchSettings();
+    } catch (e: any) {
+      error.value = e.message;
+    }
+  }
+
+  async function setActiveMatrix(id: string) {
+    try {
+      await api.setActiveMatrix(id);
+      await fetchSettings();
+    } catch (e: any) {
+      error.value = e.message;
+    }
+  }
+
+  async function updateMqtt(mqtt: Partial<MqttSettings>) {
+    try {
+      await api.setMqttConfig(mqtt);
+      await fetchSettings();
+    } catch (e: any) {
+      error.value = e.message;
+    }
+  }
+
+  async function pushOverlay(matrixId: string, areaId: string, payload: { text: string; color?: string; bg?: string; speed?: number; loop?: boolean; count?: number }) {
+    try {
+      await api.pushOverlay(matrixId, areaId, payload);
+    } catch (e: any) {
+      error.value = e.message;
+      throw e;
+    }
+  }
+
+  async function startComposer(matrixId: string, base?: { type: string; id?: string }) {
+    try {
+      await api.startComposer(matrixId, base);
+      await fetchComposerStatus(matrixId);
+    } catch (e: any) {
+      error.value = e.message;
+      throw e;
+    }
+  }
+
+  async function stopComposer(matrixId: string) {
+    try {
+      await api.stopComposer(matrixId);
+      await fetchComposerStatus(matrixId);
+    } catch (e: any) {
+      error.value = e.message;
+      throw e;
+    }
+  }
+
+  async function fetchComposerStatus(matrixId: string) {
+    try {
+      const res = await api.getComposerStatus(matrixId);
+      composerStatus.value[matrixId] = res.data;
+    } catch (e: any) {
+      error.value = e.message;
+    }
+  }
+
+  async function clearOverlays(matrixId: string, areaId?: string) {
+    try {
+      await api.clearOverlays(matrixId, areaId);
+      await fetchComposerStatus(matrixId);
+    } catch (e: any) {
+      error.value = e.message;
+      throw e;
     }
   }
 
@@ -198,13 +284,18 @@ export const useAppStore = defineStore('app', () => {
     playlists,
     drawings,
     searchResults,
+    composerStatus,
     loading,
     error,
     activeRtId,
+    activeMatrix,
     gridSize,
     fetchStatus,
     fetchSettings,
     updateDevice,
+    updateMatrices,
+    setActiveMatrix,
+    updateMqtt,
     fetchLibrary,
     addLibraryUrl,
     uploadLibraryFile,
@@ -223,6 +314,11 @@ export const useAppStore = defineStore('app', () => {
     createDrawing,
     updateDrawing,
     deleteDrawing,
+    pushOverlay,
+    startComposer,
+    stopComposer,
+    fetchComposerStatus,
+    clearOverlays,
     init,
   };
 });

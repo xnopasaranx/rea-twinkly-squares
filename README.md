@@ -13,6 +13,17 @@ A locally-hosted Vue.js 3 webapp + Node.js backend that replaces the official Tw
 - Draw directly on the matrix and back up drawings.
 - **Manual panel layout editor** to initialize a new rectangular matrix layout without the official app camera mapping.
 - **Interactive panel orientation matrix** with a live test pattern to align each physical 8×8 panel.
+- **MQTT integration**: each configured matrix publishes status and subscribes to overlay topics.
+- **Scrolling text overlays** over realtime content, with a queued message loop per overlay area.
+
+## MQTT & overlays
+
+The app can connect to an MQTT broker configured entirely in the UI (broker IP/port, credentials, base topic). For each configured matrix:
+
+- Incoming messages on `<baseTopic>/<matrix>/overlay/<areaId>/set` are queued as scrolling text.
+- Each message may loop indefinitely or run a fixed number of times, then be removed.
+- Each overlay area has a configurable max queue size; the oldest queued message is evicted when it is exceeded.
+- Start the realtime composer in the UI and choose a base source (solid color, library item or drawing); the text overlays are composited on top and streamed to the matrix.
 
 ## Hardware this was built for
 
@@ -33,16 +44,15 @@ The panel arrangement (panels across × down), device IP, number of LEDs per pan
 └── Dockerfile
 ```
 
+## Scripts
+
+- `scripts/dev.sh` – runs the **backend dev server** and the **Vue dev server** side-by-side. The Vite dev server proxies `/api` to the backend. No Docker rebuild is needed when you edit the Vue app.
+- `scripts/build.sh` – installs dependencies, compiles TypeScript for backend/frontend and builds the production Docker image. Start the container afterwards with `docker compose up -d`.
+
 ## Quick start (development)
 
 ```bash
-# Backend
-npm --prefix backend install
-npm --prefix backend run dev
-
-# Frontend (new terminal)
-npm --prefix frontend install
-npm --prefix frontend run dev
+./scripts/dev.sh
 ```
 
 The UI opens on `http://localhost:5173`, the backend API on `http://localhost:3000`.
@@ -50,7 +60,8 @@ The UI opens on `http://localhost:5173`, the backend API on `http://localhost:30
 ## Docker (single container)
 
 ```bash
-docker compose up --build
+./scripts/build.sh
+docker compose up -d
 ```
 
 Open `http://localhost:8080`.

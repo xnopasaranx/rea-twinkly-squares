@@ -6,7 +6,30 @@ export interface PanelOrientation {
   flipV: boolean;
 }
 
-export interface DeviceSettings {
+export interface MqttSettings {
+  enabled: boolean;
+  brokerHost: string;
+  brokerPort: number;
+  username: string;
+  password: string;
+  baseTopic: string;
+}
+
+export interface OverlayArea {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  maxQueueSize: number;
+  defaultColor?: string;
+  defaultBg?: string;
+  defaultSpeed?: number;
+}
+
+export interface MatrixConfig {
+  id: string;
+  name: string;
   device: {
     ip: string;
     mac?: string;
@@ -17,6 +40,14 @@ export interface DeviceSettings {
     panelOrientations?: PanelOrientation[];
     panelChain?: number[];
   };
+  topicSuffix?: string;
+  overlays: OverlayArea[];
+}
+
+export interface DeviceSettings {
+  matrices: MatrixConfig[];
+  mqtt: MqttSettings;
+  activeMatrixId?: string;
 }
 
 export interface LibraryItem {
@@ -62,7 +93,24 @@ export interface SearchResult {
 export const api = {
   getStatus: () => axios.get('/api/status'),
   getSettings: () => axios.get<DeviceSettings>('/api/settings'),
-  updateSettings: (device: Partial<DeviceSettings['device']>) => axios.put('/api/settings', device),
+  updateSettings: (settings: Partial<DeviceSettings>) => axios.put('/api/settings', settings),
+
+  // MQTT / matrices
+  listMatrices: () => axios.get<MatrixConfig[]>('/api/matrices'),
+  createMatrix: (data: Partial<MatrixConfig>) => axios.post<MatrixConfig>('/api/matrices', data),
+  updateMatrix: (id: string, data: Partial<MatrixConfig>) => axios.put<MatrixConfig>(`/api/matrices/${id}`, data),
+  deleteMatrix: (id: string) => axios.delete(`/api/matrices/${id}`),
+  setActiveMatrix: (id: string) => axios.put('/api/settings', { activeMatrixId: id }),
+
+  getMqttConfig: () => axios.get<MqttSettings>('/api/mqtt'),
+  setMqttConfig: (cfg: Partial<MqttSettings>) => axios.put('/api/mqtt', cfg),
+
+  startComposer: (matrixId: string, base?: { type: string; id?: string }) => axios.post(`/api/composer/${matrixId}/start`, base || {}),
+  stopComposer: (matrixId: string) => axios.post(`/api/composer/${matrixId}/stop`),
+  getComposerStatus: (matrixId: string) => axios.get(`/api/composer/${matrixId}/status`),
+  pushOverlay: (matrixId: string, areaId: string, payload: { text: string; color?: string; bg?: string; speed?: number; loop?: boolean; count?: number }) =>
+    axios.post(`/api/composer/${matrixId}/overlay/${areaId}`, payload),
+  clearOverlays: (matrixId: string, areaId?: string) => axios.post(`/api/composer/${matrixId}/clear`, { areaId }),
 
   getBrightness: () => axios.get('/api/device/brightness'),
   setBrightness: (value: number) => axios.post('/api/device/brightness', { value }),
