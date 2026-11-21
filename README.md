@@ -1,3 +1,6 @@
+### WARNING! This is AI vibed slop! Do not use this code without reviewing it. I have not as of yet and am using this as a boilerplate to start developing an application from this mess right here...
+You have been warned, if you can reuse any of this code feel free to do so, but do not complain that it is shite...
+
 # Twinkly Squares Open Controller
 
 A locally-hosted Vue.js 3 webapp + Node.js backend that replaces the official Twinkly Android app for Twinkly Squares LED panels.
